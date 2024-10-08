@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/cloudwego/gjson/internal/fast"
 	"github.com/tidwall/match"
 	"github.com/tidwall/pretty"
 )
@@ -252,8 +253,6 @@ func (t Result) ForEach(iterator func(key, value Result) bool) {
 			return
 		}
 	}
-	var str string
-	var vesc bool
 	var ok bool
 	var idx int
 	for ; i < len(json); i++ {
@@ -261,17 +260,19 @@ func (t Result) ForEach(iterator func(key, value Result) bool) {
 			if json[i] != '"' {
 				continue
 			}
+			var str, val string
+			var vesc bool
 			s := i
-			i, str, vesc, ok = parseString(json, i+1)
+			i, val, str, vesc, ok = parseString(json, i)
 			if !ok {
 				return
 			}
 			if vesc {
-				key.Str = unescape(str[1 : len(str)-1])
+				key.Str = unescape(str)
 			} else {
-				key.Str = str[1 : len(str)-1]
+				key.Str = str
 			}
-			key.Raw = str
+			key.Raw = val
 			key.Index = s + t.Index
 		} else {
 			key.Num += 1
@@ -600,6 +601,16 @@ func tolit(json string) (raw string) {
 }
 
 func tostr(json string) (raw string, str string) {
+	if fast.FastStringEnable {
+		e, str, esc, err := fast.String(json, 0)
+		if err != nil {
+			return json, ""
+		}
+		if esc {
+			str, _ = fast.Unquote(str)
+		}
+		return json[:e], str
+	}
 	// expects that the lead character is a '"'
 	for i := 1; i < len(json); i++ {
 		if json[i] > '\\' {
@@ -685,14 +696,19 @@ func (t Result) Value() interface{} {
 	}
 }
 
-func parseString(json string, i int) (int, string, bool, bool) {
+func parseString(json string, i int) (int, string, string, bool, bool) {
+	if fast.FastStringEnable {
+		e, v, hasEsc, err := fast.String(json, i)
+		return e, json[i:e], v, hasEsc, err == nil
+	}
+	i += 1
 	var s = i
 	for ; i < len(json); i++ {
 		if json[i] > '\\' {
 			continue
 		}
 		if json[i] == '"' {
-			return i + 1, json[s-1 : i+1], false, true
+			return i + 1, json[s-1 : i+1], json[s:i], false, true
 		}
 		if json[i] == '\\' {
 			i++
@@ -714,13 +730,13 @@ func parseString(json string, i int) (int, string, bool, bool) {
 							continue
 						}
 					}
-					return i + 1, json[s-1 : i+1], true, true
+					return i + 1, json[s-1 : i+1], json[s:i], true, true
 				}
 			}
 			break
 		}
 	}
-	return i, json[s-1:], false, false
+	return i, json[s-1:], "", false, false
 }
 
 func parseNumber(json string, i int) (int, string) {
@@ -1044,52 +1060,11 @@ func parseSquash(json string, i int) (int, string) {
 	// expects that the lead character is a '[' or '{' or '('
 	// squash the value, ignoring all nested arrays and objects.
 	// the first '[' or '{' or '(' has already been read
-	s := i
-	i++
-	depth := 1
-	for ; i < len(json); i++ {
-		if json[i] >= '"' && json[i] <= '}' {
-			switch json[i] {
-			case '"':
-				i++
-				s2 := i
-				for ; i < len(json); i++ {
-					if json[i] > '\\' {
-						continue
-					}
-					if json[i] == '"' {
-						// look for an escaped slash
-						if json[i-1] == '\\' {
-							n := 0
-							for j := i - 2; j > s2-1; j-- {
-								if json[j] != '\\' {
-									break
-								}
-								n++
-							}
-							if n%2 == 0 {
-								continue
-							}
-						}
-						break
-					}
-				}
-			case '{', '[', '(':
-				depth++
-			case '}', ']', ')':
-				depth--
-				if depth == 0 {
-					i++
-					return i, json[s:i]
-				}
-			}
-		}
-	}
-	return i, json[s:]
+	return fast.Skip(json, i)
 }
 
 func parseObject(c *parseContext, i int, path string) (int, bool) {
-	var pmatch, kesc, vesc, ok, hit bool
+	var pmatch, kesc, ok, hit bool
 	var key, val string
 	rp := parseObjectPath(path)
 	if !rp.more && rp.piped {
@@ -1170,16 +1145,17 @@ func parseObject(c *parseContext, i int, path string) (int, bool) {
 			default:
 				continue
 			case '"':
-				i++
-				i, val, vesc, ok = parseString(c.json, i)
+				var str string
+				var vesc bool
+				i, val, str, vesc, ok = parseString(c.json, i)
 				if !ok {
 					return i, false
 				}
 				if hit {
 					if vesc {
-						c.value.Str = unescape(val[1 : len(val)-1])
+						c.value.Str = unescape(str)
 					} else {
-						c.value.Str = val[1 : len(val)-1]
+						c.value.Str = str
 					}
 					c.value.Raw = val
 					c.value.Type = String
@@ -1401,7 +1377,7 @@ func queryMatches(rp *arrayPathResult, value Result) bool {
 	return false
 }
 func parseArray(c *parseContext, i int, path string) (int, bool) {
-	var pmatch, vesc, ok, hit bool
+	var pmatch, ok, hit bool
 	var val string
 	var h int
 	var alog []int
@@ -1495,17 +1471,18 @@ func parseArray(c *parseContext, i int, path string) (int, bool) {
 			default:
 				continue
 			case '"':
-				i++
-				i, val, vesc, ok = parseString(c.json, i)
+				var str string
+				var vesc bool
+				i, val, str, vesc, ok = parseString(c.json, i)
 				if !ok {
 					return i, false
 				}
 				if rp.query.on {
 					var qval Result
 					if vesc {
-						qval.Str = unescape(val[1 : len(val)-1])
+						qval.Str = unescape(str)
 					} else {
-						qval.Str = val[1 : len(val)-1]
+						qval.Str = str
 					}
 					qval.Raw = val
 					qval.Type = String
@@ -2023,6 +2000,20 @@ type parseContext struct {
 // If you are consuming JSON from an unpredictable source then you may want to
 // use the Valid function first.
 func Get(json, path string) Result {
+	// fast-path: check if the path is simple and use fast.Get() function
+	if paths := fast.FastPaths(path); paths != nil {
+		s, e, t, err := fast.Get(json, paths...)
+		if err == nil {
+			ret := Result{Raw: json[s:e], Type: Type(fast.JSONType(t)), Index: s}
+			switch ret.Type {
+			case Number:
+				ret.Num, _ = strconv.ParseFloat(ret.Raw, 64)
+			case String:
+				_, ret.Str = tostr(ret.Raw)
+			}
+			return ret
+		}
+	}
 	if len(path) > 1 {
 		if (path[0] == '@' && !DisableModifiers) || path[0] == '!' {
 			// possible modifier
@@ -2147,6 +2138,10 @@ func runeit(json string) rune {
 
 // unescape unescapes a string
 func unescape(json string) string {
+	if fast.FastStringEnable {
+		str, _ := fast.Unquote(json)
+		return str
+	}
 	var str = make([]byte, 0, len(json))
 	for i := 0; i < len(json); i++ {
 		switch {
@@ -2289,10 +2284,9 @@ func parseAny(json string, i int, hit bool) (int, Result, bool) {
 		var num bool
 		switch json[i] {
 		case '"':
-			i++
-			var vesc bool
-			var ok bool
-			i, val, vesc, ok = parseString(json, i)
+			var str string
+			var ok, vesc bool
+			i, val, str, vesc, ok = parseString(json, i)
 			if !ok {
 				return i, res, false
 			}
@@ -2300,9 +2294,9 @@ func parseAny(json string, i int, hit bool) (int, Result, bool) {
 				res.Type = String
 				res.Raw = val
 				if vesc {
-					res.Str = unescape(val[1 : len(val)-1])
+					res.Str = unescape(str)
 				} else {
-					res.Str = val[1 : len(val)-1]
+					res.Str = str
 				}
 			}
 			return i, res, true
@@ -2635,6 +2629,8 @@ func validnull(data []byte, i int) (outi int, ok bool) {
 	return i, false
 }
 
+const fastValidThreshold = 1024 * 10
+
 // Valid returns true if the input is valid json.
 //
 //	if !gjson.Valid(json) {
@@ -2642,8 +2638,11 @@ func validnull(data []byte, i int) (outi int, ok bool) {
 //	}
 //	value := gjson.Get(json, "name.last")
 func Valid(json string) bool {
-	_, ok := validpayload(stringBytes(json), 0)
-	return ok
+	if len(json) < fastValidThreshold {
+		_, ok := validpayload(stringBytes(json), 0)
+		return ok
+	}
+	return fast.Valid(json)
 }
 
 // ValidBytes returns true if the input is valid json.
@@ -2655,8 +2654,11 @@ func Valid(json string) bool {
 //
 // If working with bytes, this method preferred over ValidBytes(string(data))
 func ValidBytes(json []byte) bool {
-	_, ok := validpayload(json, 0)
-	return ok
+	if len(json) < fastValidThreshold {
+		_, ok := validpayload(json, 0)
+		return ok
+	}
+	return fast.Valid(bytesString(json))
 }
 
 func parseUint(s string) (n uint64, ok bool) {
