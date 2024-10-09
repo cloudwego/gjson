@@ -1,8 +1,11 @@
 # GJSON
+
 This is a wrapper lib of [gjson](https://github.com/tidwall/gjson), which is accelerated by [sonic](https://github.com/bytedance/sonic)'s algorithm.
 
 ## Performance
+
 It's usually faster than original one, especially for large JSON. (see codes [here](testdata/gjson_timing_test.go))
+
 ```
 goversion: 1.22.0
 goos: linux
@@ -40,7 +43,6 @@ GetSimplePath/medium-32    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
 GetSimplePath/Large-32     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
 geomean                               ²               +0.00%       
 ```
-
 
 ## Options
 
