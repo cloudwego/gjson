@@ -19,6 +19,8 @@ package fast
 
 import (
 	_ "unsafe"
+
+	"github.com/cloudwego/gjson/internal/rt"
 )
 
 // decodeString decodes a JSON string from pos and return golang string.
@@ -46,8 +48,14 @@ func validSyntax(json string) bool
 //go:linkname skipFast github.com/bytedance/sonic/ast._SkipFast
 func skipFast(src string, i int) (int, int, error)
 
-// unquote unescapes a escaped string (not including `"` at begining and end)
+// unquote unescapes an escaped string (not including `"` at beginning and end)
 //   - replace enables replacing invalid utf8 escaped char with `\uffd`
-//
-//go:linkname unquote github.com/bytedance/sonic/unquote._String
-func unquote(s string, replace bool) (ret string, err error)
+func unquote(s string, replace bool) (ret string, err error) {
+	mm := make([]byte, 0, len(s))
+	err = intoBytesUnsafe(s, &mm, replace)
+	ret = rt.Mem2Str(mm)
+	return
+}
+
+//go:linkname intoBytesUnsafe github.com/bytedance/sonic/unquote.intoBytesUnsafe
+func intoBytesUnsafe(s string, m *[]byte, replace bool) error

@@ -18,6 +18,24 @@ package rt
 
 import "unsafe"
 
+type GoString struct {
+	Ptr unsafe.Pointer
+	Len int
+}
+
+type GoSlice struct {
+	Ptr unsafe.Pointer
+	Len int
+	Cap int
+}
+
+//go:nosplit
+func Mem2Str(v []byte) (s string) {
+	(*GoString)(unsafe.Pointer(&s)).Len = (*GoSlice)(unsafe.Pointer(&v)).Len
+	(*GoString)(unsafe.Pointer(&s)).Ptr = (*GoSlice)(unsafe.Pointer(&v)).Ptr
+	return
+}
+
 // NoEscape hides a pointer from escape analysis. NoEscape is
 // the identity function but escape analysis doesn't think the
 // output depends on the input. NoEscape is inlined and currently
